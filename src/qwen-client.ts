@@ -1,57 +1,51 @@
-/**
+﻿/**
  * 阿里云 Qwen VL 客户端
  * OpenAI 兼容接口
  * 文档: https://help.aliyun.com/zh/model-studio/vision
  */
 
 import axios, { AxiosInstance } from "axios";
-import { VisionClient } from "./vision-client.js";
 import type { LumaConfig } from "./config.js";
+import { buildImageContent, type VisionClient } from "./vision-client.js";
 import { logger } from "./utils/logger.js";
 
 export class QwenClient implements VisionClient {
   private client: AxiosInstance;
-  private apiKey: string;
   private model: string;
   private maxTokens: number;
   private temperature: number;
 
   constructor(config: LumaConfig) {
-    this.apiKey = config.apiKey;
     this.model = config.model;
     this.maxTokens = config.maxTokens;
     this.temperature = config.temperature;
 
-    // 使用阿里云百炼 OpenAI 兼容接口
     this.client = axios.create({
       baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
       headers: {
         Authorization: `Bearer ${config.apiKey}`,
         "Content-Type": "application/json",
       },
-      timeout: 180000, // 180s timeout
+      timeout: 180000,
     });
   }
 
+  /**
+   * 分析图片
+   */
   async analyzeImage(
-    imageDataUrl: string,
+    imageDataUrl: string | string[],
     prompt: string,
     enableThinking?: boolean
   ): Promise<string> {
     try {
-      // Qwen3-VL 通过 extra_body 启用思考模式
-      const requestBody: any = {
+      const requestBody: Record<string, unknown> = {
         model: this.model,
         messages: [
           {
             role: "user",
             content: [
-              {
-                type: "image_url",
-                image_url: {
-                  url: imageDataUrl,
-                },
-              },
+              ...buildImageContent(imageDataUrl),
               {
                 type: "text",
                 text: prompt,
@@ -64,17 +58,17 @@ export class QwenClient implements VisionClient {
         stream: false,
       };
 
-      // 根据参数启用思考模式
       if (enableThinking !== false) {
         requestBody.extra_body = {
           enable_thinking: true,
-          thinking_budget: 81920, // 最大思考 token 预算
+          thinking_budget: 81920,
         };
       }
 
       logger.info("Calling Qwen3-VL API", {
         model: this.model,
         thinking: !!requestBody.extra_body,
+        imageCount: Array.isArray(imageDataUrl) ? imageDataUrl.length : 1,
       });
 
       const response = await this.client.post("/chat/completions", requestBody);
@@ -106,6 +100,9 @@ export class QwenClient implements VisionClient {
     }
   }
 
+  /**
+   * 获取模型名称
+   */
   getModelName(): string {
     return `Qwen (${this.model})`;
   }

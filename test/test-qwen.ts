@@ -3,86 +3,78 @@
  * 测试阿里云通义千问VL视觉理解
  */
 
-import { QwenClient } from '../src/qwen-client.js';
-import { imageToBase64 } from '../src/image-processor.js';
+import { loadConfig } from "../src/config.js";
+import {
+  imageToBase64Variants,
+  imageToBase64WithOptions,
+} from "../src/image-processor.js";
+import { QwenClient } from "../src/qwen-client.js";
 
-async function testQwen() {
-  const apiKey = process.env.DASHSCOPE_API_KEY;
-  
-  if (!apiKey) {
-    console.error('❌ 错误: 需要设置 DASHSCOPE_API_KEY 环境变量');
-    console.log('设置方法:');
-    console.log('  macOS/Linux: export DASHSCOPE_API_KEY="your-api-key"');
-    console.log('  Windows: $env:DASHSCOPE_API_KEY="your-api-key"');
-    process.exit(1);
+const TEXT_HEAVY_PROMPT_PATTERN =
+  /ocr|extract|text|code|error|ui|layout|form|table|document|screenshot|screen|文字|文本|代码|报错|界面|布局|表格|文档|长图|表单|截图/i;
+
+// 根据 prompt 选择单图或多裁剪输入
+async function prepareImageInput(imagePath: string, prompt: string) {
+  const config = loadConfig();
+  const preferText = TEXT_HEAVY_PROMPT_PATTERN.test(prompt);
+
+  if (config.multiCrop) {
+    const variants = await imageToBase64Variants(imagePath, {
+      preferText,
+      maxTiles: config.multiCropMaxTiles,
+    });
+    return variants.length === 1 ? variants[0] : variants;
   }
 
+  return imageToBase64WithOptions(imagePath, { preferText });
+}
+
+async function testQwen() {
   // 获取图片路径
   const imagePath = process.argv[2];
   if (!imagePath) {
-    console.error('❌ 错误: 请提供图片路径');
-    console.log('用法: tsx test/test-qwen.ts <图片路径>');
-    console.log('示例: tsx test/test-qwen.ts ./test.png');
+    console.error("Error: please provide an image path");
+    console.log("Usage: tsx test/test-qwen.ts <image-path>");
     process.exit(1);
   }
 
-  console.log('🚀 开始测试 Qwen3-VL-Flash...\n');
+  const config = loadConfig();
+  config.provider = "qwen";
+  if (!config.apiKey) {
+    config.apiKey = process.env.DASHSCOPE_API_KEY || "";
+  }
+  if (!config.model) {
+    config.model = "qwen3-vl-flash";
+  }
 
-  try {
-    // 1. 初始化客户端
-    console.log('1️⃣ 初始化 Qwen 客户端...');
-    const client = new QwenClient(
-      apiKey,
-      'qwen3-vl-flash',  // 使用高性价比的 Flash 版本
-      4096,
-      0.7
-    );
-    console.log(`✅ 客户端初始化成功: ${client.getModelName()}\n`);
-
-    // 2. 读取图片
-    console.log('2️⃣ 读取图片...');
-    const imageData = await imageToBase64(imagePath);
-    console.log(`✅ 图片读取成功 (${imagePath})\n`);
-
-    // 3. 测试基础分析
-    console.log('3️⃣ 测试基础分析（不启用思考模式）...');
-    const basicResult = await client.analyzeImage(
-      imageData,
-      '请详细分析这张图片的内容',
-      false
-    );
-    console.log('📊 基础分析结果:');
-    console.log(basicResult);
-    console.log('\n');
-
-    // 4. 测试思考模式
-    console.log('4️⃣ 测试思考模式（enable_thinking=true）...');
-    const thinkingResult = await client.analyzeImage(
-      imageData,
-      '请详细分析这张图片的内容，包括所有细节',
-      true  // 启用思考模式
-    );
-    console.log('🧠 思考模式分析结果:');
-    console.log(thinkingResult);
-    console.log('\n');
-
-    // 5. 测试 OCR
-    console.log('5️⃣ 测试 OCR 能力...');
-    const ocrResult = await client.analyzeImage(
-      imageData,
-      '识别图片中的所有文字',
-      false
-    );
-    console.log('📝 OCR 结果:');
-    console.log(ocrResult);
-    console.log('\n');
-
-    console.log('✅ 所有测试完成！');
-
-  } catch (error) {
-    console.error('❌ 测试失败:', error instanceof Error ? error.message : error);
+  if (!config.apiKey) {
+    console.error("Error: DASHSCOPE_API_KEY is required");
     process.exit(1);
+  }
+
+  const client = new QwenClient(config);
+  console.log(`Testing ${client.getModelName()}\n`);
+
+  const prompts = [
+    "请详细分析这张图片的内容",
+    "请详细分析这张图片的内容，包括所有细节",
+    "识别图片中的所有文字",
+  ];
+
+  for (const prompt of prompts) {
+    console.log(`Prompt: ${prompt}`);
+    const imageInput = await prepareImageInput(imagePath, prompt);
+    const result = await client.analyzeImage(
+      imageInput,
+      prompt,
+      config.enableThinking
+    );
+    console.log(result);
+    console.log("\n----------------------------------------\n");
   }
 }
 
-testQwen();
+void testQwen().catch((error) => {
+  console.error(error instanceof Error ? error.message : error);
+  process.exit(1);
+});

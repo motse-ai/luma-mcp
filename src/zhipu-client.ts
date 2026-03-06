@@ -1,10 +1,10 @@
-/**
+﻿/**
  * 智谱 GLM-4.6V API 客户端
  */
 
 import axios from "axios";
-import type { VisionClient } from "./vision-client.js";
 import type { LumaConfig } from "./config.js";
+import { buildImageContent, type VisionClient } from "./vision-client.js";
 import { logger } from "./utils/logger.js";
 
 interface ZhipuMessage {
@@ -48,9 +48,6 @@ interface ZhipuResponse {
   };
 }
 
-/**
- * 智谱 API 客户端
- */
 export class ZhipuClient implements VisionClient {
   private apiKey: string;
   private model: string;
@@ -71,7 +68,7 @@ export class ZhipuClient implements VisionClient {
    * 分析图片
    */
   async analyzeImage(
-    imageDataUrl: string,
+    imageDataUrl: string | string[],
     prompt: string,
     enableThinking?: boolean
   ): Promise<string> {
@@ -81,12 +78,7 @@ export class ZhipuClient implements VisionClient {
         {
           role: "user",
           content: [
-            {
-              type: "image_url",
-              image_url: {
-                url: imageDataUrl,
-              },
-            },
+            ...buildImageContent(imageDataUrl),
             {
               type: "text",
               text: prompt,
@@ -99,7 +91,6 @@ export class ZhipuClient implements VisionClient {
       top_p: this.topP,
     };
 
-    // 根据参数启用思考模式
     if (enableThinking !== false) {
       requestBody.thinking = { type: "enabled" };
     }
@@ -107,6 +98,7 @@ export class ZhipuClient implements VisionClient {
     logger.info("Calling GLM-4.6V API", {
       model: this.model,
       thinking: !!requestBody.thinking,
+      imageCount: Array.isArray(imageDataUrl) ? imageDataUrl.length : 1,
     });
 
     try {
@@ -118,7 +110,7 @@ export class ZhipuClient implements VisionClient {
             Authorization: `Bearer ${this.apiKey}`,
             "Content-Type": "application/json",
           },
-          timeout: 60000, // 60s 超时
+          timeout: 60000,
         }
       );
 

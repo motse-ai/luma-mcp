@@ -5,13 +5,13 @@
 export interface VisionClient {
   /**
    * 分析图片
-   * @param imageDataUrl 图片 Data URL 或 URL
+   * @param imageDataUrl 图片 Data URL 或 URL，支持单张或多张
    * @param prompt 分析提示词
    * @param enableThinking 是否启用思考模式（如支持）
    * @returns 分析结果文本
    */
   analyzeImage(
-    imageDataUrl: string,
+    imageDataUrl: string | string[],
     prompt: string,
     enableThinking?: boolean
   ): Promise<string>;
@@ -20,4 +20,17 @@ export interface VisionClient {
    * 获取模型名称
    */
   getModelName(): string;
+}
+
+/**
+ * 将单张或多张图片统一转换为多模态消息片段
+ */
+export function buildImageContent(
+  imageDataUrl: string | string[]
+): Array<{ type: "image_url"; image_url: { url: string } }> {
+  const imageUrls = Array.isArray(imageDataUrl) ? imageDataUrl : [imageDataUrl];
+  return imageUrls.map((url) => ({
+    type: "image_url",
+    image_url: { url },
+  }));
 }

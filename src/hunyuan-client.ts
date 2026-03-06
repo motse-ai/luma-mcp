@@ -5,8 +5,8 @@
  */
 
 import axios, { AxiosInstance } from "axios";
-import type { VisionClient } from "./vision-client.js";
 import type { LumaConfig } from "./config.js";
+import { buildImageContent, type VisionClient } from "./vision-client.js";
 import { logger } from "./utils/logger.js";
 
 interface HunyuanMessage {
@@ -52,14 +52,12 @@ interface HunyuanResponse {
  */
 export class HunyuanClient implements VisionClient {
   private client: AxiosInstance;
-  private apiKey: string;
   private model: string;
   private maxTokens: number;
   private temperature: number;
   private topP: number;
 
   constructor(config: LumaConfig) {
-    this.apiKey = config.apiKey;
     this.model = config.model;
     this.maxTokens = config.maxTokens;
     this.temperature = config.temperature;
@@ -79,7 +77,7 @@ export class HunyuanClient implements VisionClient {
    * 分析图片
    */
   async analyzeImage(
-    imageDataUrl: string,
+    imageDataUrl: string | string[],
     prompt: string,
     enableThinking?: boolean
   ): Promise<string> {
@@ -90,12 +88,7 @@ export class HunyuanClient implements VisionClient {
           {
             role: "user",
             content: [
-              {
-                type: "image_url",
-                image_url: {
-                  url: imageDataUrl,
-                },
-              },
+              ...buildImageContent(imageDataUrl),
               {
                 type: "text",
                 text: prompt,
@@ -111,6 +104,7 @@ export class HunyuanClient implements VisionClient {
       logger.info("Calling Hunyuan Vision API", {
         model: this.model,
         thinking: enableThinking !== false,
+        imageCount: Array.isArray(imageDataUrl) ? imageDataUrl.length : 1,
       });
 
       const response = await this.client.post<HunyuanResponse>(

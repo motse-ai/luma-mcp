@@ -20,7 +20,11 @@ import { SiliconFlowClient } from "./siliconflow-client.js";
 import { QwenClient } from "./qwen-client.js";
 import { VolcengineClient } from "./volcengine-client.js";
 import { HunyuanClient } from "./hunyuan-client.js";
-import { imageToBase64, validateImageSource } from "./image-processor.js";
+import {
+  imageToBase64WithOptions,
+  imageToBase64Variants,
+  validateImageSource,
+} from "./image-processor.js";
 import {
   withRetry,
   createSuccessResponse,
@@ -56,6 +60,9 @@ const DEFAULT_BASE_VISION_PROMPT = [
   "- No Hallucination: If unsure, say 'ambiguous'. Do not invent coordinates.",
 ].join("\n");
 
+const TEXT_HEAVY_PROMPT_PATTERN =
+  /ocr|extract|text|code|error|stack trace|ui|layout|form|table|document|screenshot|screen|文字|文本|代码|报错|界面|布局|表格|文档|长图|表单|截图/i;
+
 /**
  * Build full prompt by combining base vision prompt and user prompt.
  */
@@ -72,6 +79,36 @@ function buildFullPrompt(userPrompt: string, basePrompt?: string): string {
   }
 
   return `${trimmedBase}\n\n用户任务描述：\n${trimmedUser}`;
+}
+
+/**
+ * 根据 prompt 判断是否属于文本密集场景
+ * 用于代码截图、OCR、UI 长图等场景的保真处理
+ */
+function shouldPreferTextProcessing(prompt: string): boolean {
+  return TEXT_HEAVY_PROMPT_PATTERN.test(prompt);
+}
+
+/**
+ * 根据配置决定输出单图还是多裁剪结果
+ */
+async function prepareImageInput(
+  imageSource: string,
+  prompt: string,
+  config: ReturnType<typeof loadConfig>
+): Promise<string | string[]> {
+  const preferText = shouldPreferTextProcessing(prompt);
+
+  if (config.multiCrop) {
+    const variants = await imageToBase64Variants(imageSource, {
+      preferText,
+      maxTiles: config.multiCropMaxTiles,
+    });
+
+    return variants.length === 1 ? variants[0] : variants;
+  }
+
+  return imageToBase64WithOptions(imageSource, { preferText });
 }
 
 /**
@@ -103,6 +140,8 @@ async function createServer() {
   logger.info("Vision client initialized", {
     provider: config.provider,
     model: visionClient.getModelName(),
+    multiCrop: config.multiCrop,
+    multiCropMaxTiles: config.multiCropMaxTiles,
   });
 
   // 创建服务器 - 使用 McpServer
@@ -115,7 +154,7 @@ async function createServer() {
       capabilities: {
         tools: {},
       },
-    },
+    }
   );
 
   // 创建带重试的分析函数
@@ -124,21 +163,25 @@ async function createServer() {
       // 1. 验证图片来源
       await validateImageSource(imageSource);
 
-      // 2. 处理图片（读取或返回URL）
-      const imageDataUrl = await imageToBase64(imageSource);
+      // 2. 处理图片（单图或多裁剪）
+      const preparedImageInput = await prepareImageInput(
+        imageSource,
+        prompt,
+        config
+      );
 
       // 3. Build full prompt from base vision prompt and user prompt
       const fullPrompt = buildFullPrompt(prompt, baseVisionPrompt);
 
       // 4. 调用视觉模型分析图片
-      return await visionClient.analyzeImage(
-        imageDataUrl,
+      return visionClient.analyzeImage(
+        preparedImageInput,
         fullPrompt,
-        config.enableThinking,
+        config.enableThinking
       );
     },
     2, // 最多重试2次
-    1000, // 初始延补1秒
+    1000 // 初始延补1秒
   );
 
   // 注册工具 - 使用 McpServer.tool() API
@@ -158,12 +201,12 @@ async function createServer() {
       image_source: z
         .string()
         .describe(
-          "要分析的图片来源：支持三种方式 1) 用户粘贴图片时由Claude Desktop自动提供路径 2) 本地文件路径，如./screenshot.png 3) HTTP(S)图片URL，如https://example.com/image.png（支持 PNG、JPG、JPEG、WebP、GIF，最大 10MB）",
+          "要分析的图片来源：支持三种方式 1) 用户粘贴图片时由Claude Desktop自动提供路径 2) 本地文件路径，如./screenshot.png 3) HTTP(S)图片URL，如https://example.com/image.png（支持 PNG、JPG、JPEG、WebP、GIF，最大 10MB）"
         ),
       prompt: z
         .string()
         .describe(
-          "用户关于图片的原始问题或简短指令，例如“这张图是什么界面？”、“帮我分析这个页面的结构和布局”。服务器会在内部补充系统级视觉提示词并构造完整分析指令。",
+          "用户关于图片的原始问题或简短指令，例如“这张图是什么界面？”、“帮我分析这个页面的结构和布局”。服务器会在内部补充系统级视觉提示词并构造完整分析指令。"
         ),
     },
     async (params) => {
@@ -174,6 +217,7 @@ async function createServer() {
         logger.info("Analyzing image", {
           source: params.image_source,
           prompt,
+          preferText: shouldPreferTextProcessing(prompt),
         });
 
         // 执行分析（带重试）
@@ -187,10 +231,10 @@ async function createServer() {
         });
 
         return createErrorResponse(
-          error instanceof Error ? error.message : "Unknown error",
+          error instanceof Error ? error.message : "Unknown error"
         );
       }
-    },
+    }
   );
 
   return server;

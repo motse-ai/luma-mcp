@@ -1,12 +1,11 @@
-/**
+﻿/**
  * 火山方舟 Doubao 视觉模型客户端
- * 支持 Doubao-Seed-1.6 系列（flash、vision、lite）
- * 使用 Chat Completions API 格式
+ * 支持 Doubao-Seed-1.6 系列
  */
 
 import axios from "axios";
-import type { VisionClient } from "./vision-client.js";
 import type { LumaConfig } from "./config.js";
+import { buildImageContent, type VisionClient } from "./vision-client.js";
 import { logger } from "./utils/logger.js";
 
 interface VolcengineMessage {
@@ -52,9 +51,6 @@ interface VolcengineResponse {
   };
 }
 
-/**
- * 火山方舟客户端
- */
 export class VolcengineClient implements VisionClient {
   private apiKey: string;
   private model: string;
@@ -74,7 +70,7 @@ export class VolcengineClient implements VisionClient {
    * 分析图片
    */
   async analyzeImage(
-    imageDataUrl: string,
+    imageDataUrl: string | string[],
     prompt: string,
     enableThinking?: boolean
   ): Promise<string> {
@@ -84,12 +80,7 @@ export class VolcengineClient implements VisionClient {
         {
           role: "user",
           content: [
-            {
-              type: "image_url",
-              image_url: {
-                url: imageDataUrl,
-              },
-            },
+            ...buildImageContent(imageDataUrl),
             {
               type: "text",
               text: prompt,
@@ -102,7 +93,6 @@ export class VolcengineClient implements VisionClient {
       stream: false,
     };
 
-    // 根据参数启用思考模式
     if (enableThinking !== false) {
       requestBody.thinking = { type: "enabled" };
     }
@@ -110,6 +100,7 @@ export class VolcengineClient implements VisionClient {
     logger.info("Calling Volcengine Doubao API", {
       model: this.model,
       thinking: !!requestBody.thinking,
+      imageCount: Array.isArray(imageDataUrl) ? imageDataUrl.length : 1,
     });
 
     try {
@@ -121,7 +112,7 @@ export class VolcengineClient implements VisionClient {
             Authorization: `Bearer ${this.apiKey}`,
             "Content-Type": "application/json",
           },
-          timeout: 120000, // 120s 超时
+          timeout: 120000,
         }
       );
 

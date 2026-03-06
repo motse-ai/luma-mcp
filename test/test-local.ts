@@ -3,64 +3,106 @@
  * 直接测试图片分析功能，不需要MCP客户端
  */
 
-import { loadConfig } from '../src/config.js';
-import type { VisionClient } from '../src/vision-client.js';
-import { ZhipuClient } from '../src/zhipu-client.js';
-import { SiliconFlowClient } from '../src/siliconflow-client.js';
-import { imageToBase64, validateImageSource } from '../src/image-processor.js';
-import { buildAnalysisPrompt } from '../src/prompts.js';
-import { logger } from '../src/utils/logger.js';
+import { loadConfig, type LumaConfig } from "../src/config.js";
+import { HunyuanClient } from "../src/hunyuan-client.js";
+import {
+  imageToBase64Variants,
+  imageToBase64WithOptions,
+  validateImageSource,
+} from "../src/image-processor.js";
+import { QwenClient } from "../src/qwen-client.js";
+import { SiliconFlowClient } from "../src/siliconflow-client.js";
+import type { VisionClient } from "../src/vision-client.js";
+import { VolcengineClient } from "../src/volcengine-client.js";
+import { ZhipuClient } from "../src/zhipu-client.js";
+
+const TEXT_HEAVY_PROMPT_PATTERN =
+  /ocr|extract|text|code|error|ui|layout|form|table|document|screenshot|screen|文字|文本|代码|报错|界面|布局|表格|文档|长图|表单|截图/i;
+
+// 根据 provider 创建客户端
+function createClient(config: LumaConfig): VisionClient {
+  switch (config.provider) {
+    case "siliconflow":
+      return new SiliconFlowClient(config);
+    case "qwen":
+      return new QwenClient(config);
+    case "volcengine":
+      return new VolcengineClient(config);
+    case "hunyuan":
+      return new HunyuanClient(config);
+    default:
+      return new ZhipuClient(config);
+  }
+}
+
+// 根据配置准备单图或多裁剪图片输入
+async function prepareImageInput(
+  imagePath: string,
+  question: string,
+  config: LumaConfig
+): Promise<string | string[]> {
+  const preferText = TEXT_HEAVY_PROMPT_PATTERN.test(question);
+
+  if (config.multiCrop) {
+    const variants = await imageToBase64Variants(imagePath, {
+      preferText,
+      maxTiles: config.multiCropMaxTiles,
+    });
+
+    return variants.length === 1 ? variants[0] : variants;
+  }
+
+  return imageToBase64WithOptions(imagePath, { preferText });
+}
 
 async function testImageAnalysis(imagePath: string, question?: string) {
-  console.log('\n==========================================');
-  console.log('🧪 测试 Luma MCP 图片分析');
-  console.log('==========================================\n');
+  console.log("\n==========================================");
+  console.log("Testing Luma MCP image analysis");
+  console.log("==========================================\n");
 
   try {
     // 1. 加载配置
-    console.log('📝 加载配置...');
+    console.log("Loading config...");
     const config = loadConfig();
-    console.log(`✅ 配置加载成功: 提供商 ${config.provider}, 模型 ${config.model}\n`);
+    console.log(
+      `Config loaded: provider=${config.provider}, model=${config.model}, multiCrop=${config.multiCrop}`
+    );
 
     // 2. 验证图片
-    console.log('🔍 验证图片来源...');
+    console.log("Validating image source...");
     await validateImageSource(imagePath);
-    console.log(`✅ 图片验证通过: ${imagePath}\n`);
+    console.log(`Image validation passed: ${imagePath}`);
 
-    // 3. 处理图片
-    console.log('🖼️  处理图片...');
-    const imageDataUrl = await imageToBase64(imagePath);
-    const isUrl = imagePath.startsWith('http');
-    console.log(`✅ 图片处理完成: ${isUrl ? 'URL' : 'Base64编码'}\n`);
+    // 3. 构建提示词
+    const prompt = question || "请详细分析这张图片的内容";
+    console.log(`Prompt: ${prompt}`);
 
-    // 4. 构建提示词
-    console.log('💬 构建提示词...');
-    // DeepSeek-OCR 需要简洁 prompt
-    const prompt = config.provider === 'siliconflow'
-      ? (question || '请详细分析这张图片的内容')
-      : buildAnalysisPrompt(question);
-    console.log(`✅ 提示词: ${question || '通用描述'}\n`);
+    // 4. 处理图片
+    console.log("Preparing image input...");
+    const imageInput = await prepareImageInput(imagePath, prompt, config);
+    console.log(
+      `Image prepared: ${Array.isArray(imageInput) ? `${imageInput.length} variants` : "single image"}`
+    );
 
-    // 5. 创建客户端并调用API
-    const client: VisionClient = config.provider === 'siliconflow'
-      ? new SiliconFlowClient(config)
-      : new ZhipuClient(config);
-    
-    const modelName = config.provider === 'siliconflow' ? 'DeepSeek-OCR' : 'GLM-4.5V';
-    console.log(`🤖 调用 ${modelName} API...`);
-    const result = await client.analyzeImage(imageDataUrl, prompt);
+    // 5. 创建客户端并调用 API
+    const client = createClient(config);
+    console.log(`Calling ${client.getModelName()}...`);
+    const result = await client.analyzeImage(
+      imageInput,
+      prompt,
+      config.enableThinking
+    );
 
     // 6. 显示结果
-    console.log('\n==========================================');
-    console.log('📊 分析结果');
-    console.log('==========================================\n');
+    console.log("\n==========================================");
+    console.log("Analysis Result");
+    console.log("==========================================\n");
     console.log(result);
-    console.log('\n==========================================');
-    console.log('✅ 测试完成！');
-    console.log('==========================================\n');
-
+    console.log("\n==========================================");
+    console.log("Local test completed");
+    console.log("==========================================\n");
   } catch (error) {
-    console.error('\n❌ 测试失败:');
+    console.error("\nLocal test failed:");
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
   }
@@ -71,31 +113,18 @@ const args = process.argv.slice(2);
 
 if (args.length === 0) {
   console.log(`
-使用方法:
-  npm run test:local <图片路径或URL> [问题]
+Usage:
+  npm run test:local <image-path-or-url> [question]
 
-示例:
-  # 分析本地图片
+Examples:
   npm run test:local ./test.png
-
-  # 分析本地图片并提问
   npm run test:local ./code-error.png "这段代码为什么报错？"
-
-  # 分析远程图片
   npm run test:local https://example.com/image.jpg
-
-环境变量:
-  # 使用智谱 GLM-4.5V
-  ZHIPU_API_KEY=your-api-key
-  
-  # 使用硅基流动 DeepSeek-OCR
-  MODEL_PROVIDER=siliconflow
-  SILICONFLOW_API_KEY=your-api-key
-  `);
+`);
   process.exit(1);
 }
 
 const imagePath = args[0];
-const question = args.slice(1).join(' ') || undefined;
+const question = args.slice(1).join(" ") || undefined;
 
-testImageAnalysis(imagePath, question);
+void testImageAnalysis(imagePath, question);

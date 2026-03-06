@@ -1,12 +1,12 @@
-/**
+﻿/**
  * 硅基流动 DeepSeek-OCR API 客户端
  * OpenAI 兼容接口
  */
 
-import axios from 'axios';
-import type { VisionClient } from './vision-client.js';
-import type { LumaConfig } from './config.js';
-import { logger } from './utils/logger.js';
+import axios from "axios";
+import type { LumaConfig } from "./config.js";
+import { buildImageContent, type VisionClient } from "./vision-client.js";
+import { logger } from "./utils/logger.js";
 
 interface SiliconFlowMessage {
   role: string;
@@ -48,15 +48,12 @@ interface SiliconFlowResponse {
   };
 }
 
-/**
- * 硅基流动 API 客户端
- */
 export class SiliconFlowClient implements VisionClient {
   private apiKey: string;
   private model: string;
   private maxTokens: number;
   private temperature: number;
-  private apiEndpoint = 'https://api.siliconflow.cn/v1/chat/completions';
+  private apiEndpoint = "https://api.siliconflow.cn/v1/chat/completions";
 
   constructor(config: LumaConfig) {
     this.apiKey = config.apiKey;
@@ -68,21 +65,20 @@ export class SiliconFlowClient implements VisionClient {
   /**
    * 分析图片
    */
-  async analyzeImage(imageDataUrl: string, prompt: string, enableThinking?: boolean): Promise<string> {
+  async analyzeImage(
+    imageDataUrl: string | string[],
+    prompt: string,
+    enableThinking?: boolean
+  ): Promise<string> {
     const requestBody: SiliconFlowRequest = {
       model: this.model,
       messages: [
         {
-          role: 'user',
+          role: "user",
           content: [
+            ...buildImageContent(imageDataUrl),
             {
-              type: 'image_url',
-              image_url: {
-                url: imageDataUrl,
-              },
-            },
-            {
-              type: 'text',
+              type: "text",
               text: prompt,
             },
           ],
@@ -93,8 +89,10 @@ export class SiliconFlowClient implements VisionClient {
       stream: false,
     };
 
-    logger.info('Calling SiliconFlow DeepSeek-OCR API', { 
+    logger.info("Calling SiliconFlow DeepSeek-OCR API", {
       model: this.model,
+      imageCount: Array.isArray(imageDataUrl) ? imageDataUrl.length : 1,
+      thinking: enableThinking !== false,
     });
 
     try {
@@ -103,35 +101,37 @@ export class SiliconFlowClient implements VisionClient {
         requestBody,
         {
           headers: {
-            'Authorization': `Bearer ${this.apiKey}`,
-            'Content-Type': 'application/json',
+            Authorization: `Bearer ${this.apiKey}`,
+            "Content-Type": "application/json",
           },
-          timeout: 60000, // 60s 超时
+          timeout: 60000,
         }
       );
 
       if (!response.data.choices || response.data.choices.length === 0) {
-        throw new Error('No response from DeepSeek-OCR');
+        throw new Error("No response from DeepSeek-OCR");
       }
 
       const result = response.data.choices[0].message.content;
       const usage = response.data.usage;
 
-      logger.info('SiliconFlow API call successful', { 
+      logger.info("SiliconFlow API call successful", {
         tokens: usage?.total_tokens || 0,
-        model: response.data.model
+        model: response.data.model,
       });
 
       return result;
     } catch (error) {
-      logger.error('SiliconFlow API call failed', { 
-        error: error instanceof Error ? error.message : String(error) 
+      logger.error("SiliconFlow API call failed", {
+        error: error instanceof Error ? error.message : String(error),
       });
 
       if (axios.isAxiosError(error)) {
         const message = error.response?.data?.error?.message || error.message;
         const status = error.response?.status;
-        throw new Error(`SiliconFlow API error (${status || 'unknown'}): ${message}`);
+        throw new Error(
+          `SiliconFlow API error (${status || "unknown"}): ${message}`
+        );
       }
       throw error;
     }
