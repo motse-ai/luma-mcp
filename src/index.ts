@@ -10,8 +10,13 @@ import { setupConsoleRedirection, logger } from "./utils/logger.js";
 setupConsoleRedirection();
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
+import {
+  createServer as createHttpServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
 
 import { loadConfig } from "./config.js";
 import type { VisionClient } from "./vision-client.js";
@@ -62,6 +67,9 @@ const DEFAULT_BASE_VISION_PROMPT = [
 
 const TEXT_HEAVY_PROMPT_PATTERN =
   /ocr|extract|text|code|error|stack trace|ui|layout|form|table|document|screenshot|screen|文字|文本|代码|报错|界面|布局|表格|文档|长图|表单|截图/i;
+const DEFAULT_HTTP_PORT = 8080;
+const HTTP_HOST = "0.0.0.0";
+const MCP_HTTP_PATH = "/mcp";
 
 /**
  * Build full prompt by combining base vision prompt and user prompt.
@@ -240,16 +248,124 @@ async function createServer() {
   return server;
 }
 
+function writeJson(
+  res: ServerResponse,
+  statusCode: number,
+  payload: unknown
+): void {
+  res.statusCode = statusCode;
+  res.setHeader("content-type", "application/json; charset=utf-8");
+  res.end(JSON.stringify(payload));
+}
+
+function writeText(res: ServerResponse, statusCode: number, text: string): void {
+  res.statusCode = statusCode;
+  res.setHeader("content-type", "text/plain; charset=utf-8");
+  res.end(text);
+}
+
+async function readJsonBody(req: IncomingMessage): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    let body = "";
+
+    req.setEncoding("utf8");
+    req.on("data", (chunk: string) => {
+      body += chunk;
+    });
+    req.on("end", () => {
+      if (!body.trim()) {
+        resolve(undefined);
+        return;
+      }
+
+      try {
+        resolve(JSON.parse(body));
+      } catch {
+        reject(new Error("Invalid JSON request body"));
+      }
+    });
+    req.on("error", (error) => {
+      reject(error);
+    });
+  });
+}
+
+async function handleHttpRequest(
+  req: IncomingMessage,
+  res: ServerResponse
+): Promise<void> {
+  const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+  const method = req.method ?? "GET";
+
+  if (method === "GET" && (url.pathname === "/" || url.pathname === "/healthz")) {
+    writeText(res, 200, "ok");
+    return;
+  }
+
+  if (url.pathname !== MCP_HTTP_PATH) {
+    writeText(res, 404, "Not Found");
+    return;
+  }
+
+  if (method !== "POST") {
+    writeJson(res, 405, { error: "Method Not Allowed" });
+    return;
+  }
+
+  try {
+    const parsedBody = await readJsonBody(req);
+    const mcpServer = await createServer();
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+      enableJsonResponse: true,
+    });
+
+    await mcpServer.connect(transport);
+    await transport.handleRequest(req, res, parsedBody);
+  } catch (error) {
+    logger.error("Failed to handle MCP HTTP request", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+
+    if (!res.headersSent) {
+      writeJson(res, 500, {
+        error: error instanceof Error ? error.message : "Internal server error",
+      });
+    }
+  }
+}
+
+async function startHttpMode(port: number): Promise<void> {
+  const httpServer = createHttpServer((req, res) => {
+    void handleHttpRequest(req, res);
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    httpServer.once("error", reject);
+    httpServer.listen(port, HTTP_HOST, () => {
+      resolve();
+    });
+  });
+
+  logger.info("Luma MCP server started successfully on HTTP", {
+    host: HTTP_HOST,
+    port,
+    endpoint: MCP_HTTP_PATH,
+  });
+}
+
 /**
  * 主函数
  */
 async function main() {
   try {
-    const server = await createServer();
-    const transport = new StdioServerTransport();
-    await server.connect(transport);
+    const parsedPort = Number(process.env.PORT);
+    const port =
+      Number.isFinite(parsedPort) && parsedPort > 0
+        ? parsedPort
+        : DEFAULT_HTTP_PORT;
 
-    logger.info("Luma MCP server started successfully on stdio");
+    await startHttpMode(port);
   } catch (error) {
     logger.error("Failed to start Luma MCP server", {
       error: error instanceof Error ? error.message : String(error),
