@@ -6,8 +6,8 @@
 import { loadConfig, type LumaConfig } from "../src/config.js";
 import { HunyuanClient } from "../src/hunyuan-client.js";
 import {
-  imageToBase64Variants,
   imageToBase64WithOptions,
+  prepareVisionImageInput,
   validateImageSource,
 } from "../src/image-processor.js";
 import { QwenClient } from "../src/qwen-client.js";
@@ -40,19 +40,19 @@ async function prepareImageInput(
   imagePath: string,
   question: string,
   config: LumaConfig
-): Promise<string | string[]> {
+) : Promise<{ imageData: string | string[]; imageHint?: string }> {
   const preferText = TEXT_HEAVY_PROMPT_PATTERN.test(question);
 
   if (config.multiCrop) {
-    const variants = await imageToBase64Variants(imagePath, {
+    return prepareVisionImageInput(imagePath, {
       preferText,
       maxTiles: config.multiCropMaxTiles,
     });
-
-    return variants.length === 1 ? variants[0] : variants;
   }
 
-  return imageToBase64WithOptions(imagePath, { preferText });
+  return {
+    imageData: await imageToBase64WithOptions(imagePath, { preferText }),
+  };
 }
 
 async function testImageAnalysis(imagePath: string, question?: string) {
@@ -81,15 +81,22 @@ async function testImageAnalysis(imagePath: string, question?: string) {
     console.log("Preparing image input...");
     const imageInput = await prepareImageInput(imagePath, prompt, config);
     console.log(
-      `Image prepared: ${Array.isArray(imageInput) ? `${imageInput.length} variants` : "single image"}`
+      `Image prepared: ${
+        Array.isArray(imageInput.imageData)
+          ? `${imageInput.imageData.length} variants`
+          : "single image"
+      }`
     );
+    if (imageInput.imageHint) {
+      console.log(`Image hint: ${imageInput.imageHint}`);
+    }
 
     // 5. 创建客户端并调用 API
     const client = createClient(config);
     console.log(`Calling ${client.getModelName()}...`);
     const result = await client.analyzeImage(
-      imageInput,
-      prompt,
+      imageInput.imageData,
+      imageInput.imageHint ? `${prompt}\n\n补充说明：${imageInput.imageHint}` : prompt,
       config.enableThinking
     );
 

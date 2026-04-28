@@ -22,7 +22,7 @@ import { VolcengineClient } from "./volcengine-client.js";
 import { HunyuanClient } from "./hunyuan-client.js";
 import {
   imageToBase64WithOptions,
-  imageToBase64Variants,
+  prepareVisionImageInput,
   validateImageSource,
 } from "./image-processor.js";
 import {
@@ -96,19 +96,19 @@ async function prepareImageInput(
   imageSource: string,
   prompt: string,
   config: ReturnType<typeof loadConfig>
-): Promise<string | string[]> {
-  const preferText = shouldPreferTextProcessing(prompt);
+) : Promise<{ imageData: string | string[]; imageHint?: string }> {
+  const preferText = shouldPreferTextProcessing(prompt) ? true : undefined;
 
   if (config.multiCrop) {
-    const variants = await imageToBase64Variants(imageSource, {
+    return prepareVisionImageInput(imageSource, {
       preferText,
       maxTiles: config.multiCropMaxTiles,
     });
-
-    return variants.length === 1 ? variants[0] : variants;
   }
 
-  return imageToBase64WithOptions(imageSource, { preferText });
+  return {
+    imageData: await imageToBase64WithOptions(imageSource, { preferText }),
+  };
 }
 
 /**
@@ -157,23 +157,9 @@ async function createServer() {
     }
   );
 
-  // 创建带重试的分析函数
+  // 只对模型调用做重试，避免远程下载和图片裁剪被重复执行
   const analyzeWithRetry = withRetry(
-    async (imageSource: string, prompt: string) => {
-      // 1. 验证图片来源
-      await validateImageSource(imageSource);
-
-      // 2. 处理图片（单图或多裁剪）
-      const preparedImageInput = await prepareImageInput(
-        imageSource,
-        prompt,
-        config
-      );
-
-      // 3. Build full prompt from base vision prompt and user prompt
-      const fullPrompt = buildFullPrompt(prompt, baseVisionPrompt);
-
-      // 4. 调用视觉模型分析图片
+    async (preparedImageInput: string | string[], fullPrompt: string) => {
       return visionClient.analyzeImage(
         preparedImageInput,
         fullPrompt,
@@ -220,8 +206,30 @@ async function createServer() {
           preferText: shouldPreferTextProcessing(prompt),
         });
 
-        // 执行分析（带重试）
-        const result = await analyzeWithRetry(params.image_source, prompt);
+        // 1. 验证图片来源
+        await validateImageSource(params.image_source);
+
+        // 2. 处理图片（单图或多裁剪）
+        const preparedImageInput = await prepareImageInput(
+          params.image_source,
+          prompt,
+          config
+        );
+
+        // 3. Build full prompt from base vision prompt and user prompt
+        const promptWithImageHint = preparedImageInput.imageHint
+          ? `${prompt}\n\n补充说明：${preparedImageInput.imageHint}`
+          : prompt;
+        const fullPrompt = buildFullPrompt(
+          promptWithImageHint,
+          baseVisionPrompt
+        );
+
+        // 4. 只重试模型调用，避免重复处理大图
+        const result = await analyzeWithRetry(
+          preparedImageInput.imageData,
+          fullPrompt
+        );
 
         logger.info("Image analysis completed successfully");
         return createSuccessResponse(result);

@@ -45,6 +45,21 @@ function estimateBytesFromDataUri(input: string): number {
   }
 }
 
+// 解码 Data URI，纳入统一的图片预处理流程
+function decodeDataUri(input: string): { buffer: Buffer; mimeType: string } {
+  const mimeType = ensureSupportedMimeType(getMimeFromDataUri(input));
+  const base64 = input.split(",")[1] || "";
+
+  if (!base64) {
+    throw new Error("Invalid Data URI: missing base64 payload");
+  }
+
+  return {
+    buffer: Buffer.from(base64, "base64"),
+    mimeType,
+  };
+}
+
 /**
  * 规范化本地图片路径（例如移除前缀符号）
  * 部分客户端使用 "@path/to/file" 引用，需要转为真实路径
@@ -156,6 +171,10 @@ async function fetchRemoteImage(
 async function loadImageBuffer(
   imageSource: string
 ): Promise<{ buffer: Buffer; mimeType: string }> {
+  if (isDataUri(imageSource)) {
+    return decodeDataUri(imageSource);
+  }
+
   if (isUrl(imageSource)) {
     return fetchRemoteImage(imageSource);
   }
@@ -234,6 +253,11 @@ export async function imageToBase64(imagePath: string): Promise<string> {
   return imageToBase64WithOptions(imagePath);
 }
 
+export interface PreparedImageInput {
+  imageData: string | string[];
+  imageHint?: string;
+}
+
 /**
  * 将图片转为单张 base64 Data URL
  * 对文本密集场景保留更多细节
@@ -244,11 +268,6 @@ export async function imageToBase64WithOptions(
 ): Promise<string> {
   try {
     const normalizedPath = normalizeImageSourcePath(imagePath);
-
-    if (isDataUri(normalizedPath)) {
-      return normalizedPath;
-    }
-
     const result = await encodeImageSource(normalizedPath, options);
     return `data:${result.mimeType};base64,${result.base64}`;
   } catch (error) {
@@ -270,11 +289,6 @@ export async function imageToBase64Variants(
 ): Promise<string[]> {
   try {
     const normalizedPath = normalizeImageSourcePath(imagePath);
-
-    if (isDataUri(normalizedPath)) {
-      return [normalizedPath];
-    }
-
     const { buffer: imageBuffer, mimeType } = await loadImageBuffer(normalizedPath);
 
     if (mimeType === "image/gif") {
@@ -289,55 +303,49 @@ export async function imageToBase64Variants(
     const metadata = await sharp(imageBuffer).metadata();
     const width = metadata.width ?? 0;
     const height = metadata.height ?? 0;
+    const preferText = await resolvePreferTextMode(
+      imageBuffer,
+      mimeType,
+      options?.preferText
+    );
 
     if (!width || !height) {
-      const full = await encodeBufferToDataUrl(
-        imageBuffer,
-        mimeType,
-        options?.preferText
-      );
+      const full = await encodeBufferToDataUrl(imageBuffer, mimeType, preferText);
       return [full];
     }
 
     const shouldSplit =
       Math.max(width, height) >= 1800 || width * height >= 3500000;
 
-    const full = await encodeBufferToDataUrl(
-      imageBuffer,
-      mimeType,
-      options?.preferText
-    );
+    const full = await encodeBufferToDataUrl(imageBuffer, mimeType, preferText);
 
     if (!shouldSplit) {
       return [full];
     }
 
-    const rows = 2;
-    const cols = 2;
-    const tileWidth = Math.floor(width / cols);
-    const tileHeight = Math.floor(height / rows);
-    const tiles: string[] = [];
+    const cropRegions = buildCropRegions(
+      width,
+      height,
+      Math.max(1, options?.maxTiles ?? 5)
+    );
 
-    for (let row = 0; row < rows; row += 1) {
-      for (let col = 0; col < cols; col += 1) {
-        const left = col * tileWidth;
-        const top = row * tileHeight;
-        const currentWidth = col === cols - 1 ? width - left : tileWidth;
-        const currentHeight = row === rows - 1 ? height - top : tileHeight;
-        const tileBuffer = await sharp(imageBuffer)
-          .extract({ left, top, width: currentWidth, height: currentHeight })
-          .toBuffer();
-        const tileDataUrl = await encodeBufferToDataUrl(
-          tileBuffer,
-          mimeType,
-          options?.preferText
-        );
-        tiles.push(tileDataUrl);
-      }
+    if (cropRegions.length === 0) {
+      return [full];
     }
 
-    const maxTiles = Math.max(1, options?.maxTiles ?? 5);
-    return [full, ...tiles].slice(0, maxTiles);
+    const tiles: string[] = [];
+
+    for (const region of cropRegions) {
+      const tileBuffer = await sharp(imageBuffer).extract(region).toBuffer();
+      const tileDataUrl = await encodeBufferToDataUrl(
+        tileBuffer,
+        mimeType,
+        preferText
+      );
+      tiles.push(tileDataUrl);
+    }
+
+    return [full, ...tiles];
   } catch (error) {
     throw new Error(
       `Failed to process image: ${
@@ -345,6 +353,27 @@ export async function imageToBase64Variants(
       }`
     );
   }
+}
+
+/**
+ * 准备适合模型理解的图片输入。
+ * 多裁剪场景除了返回图片列表，还会补充阅读顺序提示，帮助模型理解每张图的角色。
+ */
+export async function prepareVisionImageInput(
+  imagePath: string,
+  options?: { preferText?: boolean; maxTiles?: number }
+): Promise<PreparedImageInput> {
+  const variants = await imageToBase64Variants(imagePath, options);
+
+  if (variants.length <= 1) {
+    return { imageData: variants[0] };
+  }
+
+  const metadataHint = buildImageSetHint(variants.length - 1, imagePath, options);
+  return {
+    imageData: variants,
+    imageHint: metadataHint,
+  };
 }
 
 /**
@@ -368,17 +397,18 @@ async function encodeLocalImage(
 ): Promise<{ base64: string; mimeType: string }> {
   let buffer = imageBuffer;
   let outputMimeType = mimeType;
+  const preferText = await resolvePreferTextMode(
+    imageBuffer,
+    mimeType,
+    options?.preferText
+  );
 
   if (buffer.length > 2 * 1024 * 1024) {
     logger.info("Compressing large image", {
       originalSize: `${(buffer.length / (1024 * 1024)).toFixed(2)}MB`,
-      preferText: !!options?.preferText,
+      preferText,
     });
-    const compressed = await compressImage(
-      buffer,
-      outputMimeType,
-      options?.preferText
-    );
+    const compressed = await compressImage(buffer, outputMimeType, preferText);
     buffer = compressed.buffer;
     outputMimeType = compressed.mimeType;
   }
@@ -445,4 +475,186 @@ async function compressImage(
     .jpeg({ quality: preferText ? 90 : 85 })
     .toBuffer();
   return { buffer, mimeType: "image/jpeg" };
+}
+
+/**
+ * 解析最终是否启用文本优先处理。
+ * - 显式传入 true / false 时尊重调用方
+ * - 未显式指定时，根据图片尺寸、长宽比和格式自动判断
+ */
+async function resolvePreferTextMode(
+  imageBuffer: Buffer,
+  mimeType: string,
+  preferText?: boolean
+): Promise<boolean> {
+  if (preferText !== undefined) {
+    return preferText;
+  }
+
+  return inferTextHeavyFromImage(imageBuffer, mimeType);
+}
+
+/**
+ * 根据图片自身特征推断是否更适合文本优先处理。
+ * 这里保持保守，只在典型长图、截图和高分辨率文档图上自动启用。
+ */
+async function inferTextHeavyFromImage(
+  imageBuffer: Buffer,
+  mimeType: string
+): Promise<boolean> {
+  if (mimeType === "image/gif") {
+    return false;
+  }
+
+  try {
+    const metadata = await sharp(imageBuffer).metadata();
+    const width = metadata.width ?? 0;
+    const height = metadata.height ?? 0;
+
+    if (!width || !height) {
+      return mimeType === "image/png";
+    }
+
+    const longSide = Math.max(width, height);
+    const shortSide = Math.min(width, height);
+    const aspectRatio = shortSide > 0 ? longSide / shortSide : 1;
+    const pixelCount = width * height;
+    const screenshotLikeMime =
+      mimeType === "image/png" || mimeType === "image/webp";
+
+    if (aspectRatio >= 2.2 && longSide >= 1400) {
+      return true;
+    }
+
+    if (screenshotLikeMime && pixelCount >= 1_200_000 && shortSide >= 700) {
+      return true;
+    }
+
+    if (pixelCount >= 2_800_000 && shortSide >= 900) {
+      return true;
+    }
+
+    return false;
+  } catch {
+    return mimeType === "image/png";
+  }
+}
+
+type CropRegion = {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+};
+
+/**
+ * 为长图、宽图和接近正方形的大图生成自适应裁剪区域。
+ * - 长图优先按纵向条带切分
+ * - 宽图优先按横向条带切分
+ * - 近似正方形的大图使用 2x2 网格
+ * - 裁剪之间保留少量重叠，减少文字落在边界处被截断
+ */
+function buildCropRegions(
+  width: number,
+  height: number,
+  maxTiles: number
+): CropRegion[] {
+  const extraTiles = Math.max(0, maxTiles - 1);
+  if (extraTiles === 0) {
+    return [];
+  }
+
+  const aspectRatio = width / height;
+  let rows = 1;
+  let cols = 1;
+
+  if (height / width >= 1.6) {
+    rows = Math.min(extraTiles, Math.max(2, Math.min(4, Math.ceil(height / width))));
+  } else if (width / height >= 1.6) {
+    cols = Math.min(extraTiles, Math.max(2, Math.min(4, Math.ceil(width / height))));
+  } else {
+    if (extraTiles >= 4) {
+      rows = 2;
+      cols = 2;
+    } else if (extraTiles === 3) {
+      if (aspectRatio >= 1) {
+        cols = 3;
+      } else {
+        rows = 3;
+      }
+    } else if (extraTiles === 2) {
+      if (aspectRatio >= 1) {
+        cols = 2;
+      } else {
+        rows = 2;
+      }
+    }
+  }
+
+  const overlapX = cols > 1 ? Math.min(96, Math.floor(width * 0.06)) : 0;
+  const overlapY = rows > 1 ? Math.min(96, Math.floor(height * 0.06)) : 0;
+  const baseWidth =
+    cols > 1 ? Math.ceil((width + overlapX * (cols - 1)) / cols) : width;
+  const baseHeight =
+    rows > 1 ? Math.ceil((height + overlapY * (rows - 1)) / rows) : height;
+  const stepX = cols > 1 ? baseWidth - overlapX : width;
+  const stepY = rows > 1 ? baseHeight - overlapY : height;
+  const regions: CropRegion[] = [];
+
+  for (let row = 0; row < rows; row += 1) {
+    for (let col = 0; col < cols; col += 1) {
+      if (regions.length >= extraTiles) {
+        return regions;
+      }
+
+      const left =
+        cols > 1 ? Math.min(col * stepX, Math.max(0, width - baseWidth)) : 0;
+      const top =
+        rows > 1 ? Math.min(row * stepY, Math.max(0, height - baseHeight)) : 0;
+
+      regions.push({
+        left,
+        top,
+        width: Math.min(baseWidth, width - left),
+        height: Math.min(baseHeight, height - top),
+      });
+    }
+  }
+
+  return regions;
+}
+
+/**
+ * 为多图输入生成阅读顺序提示。
+ * 这里不暴露本地路径，只说明第 1 张为总览，其余图片按阅读方向排列。
+ */
+function buildImageSetHint(
+  tileCount: number,
+  imagePath: string,
+  options?: { preferText?: boolean; maxTiles?: number }
+): string {
+  const normalizedPath = normalizeImageSourcePath(imagePath);
+  const isData = isDataUri(normalizedPath);
+  const sourceKind = isData
+    ? "pasted image"
+    : isUrl(normalizedPath)
+      ? "remote image"
+      : "local image";
+
+  const labels = Array.from({ length: tileCount }, (_, index) => {
+    const position = index + 2;
+    return `image ${position} is a zoomed crop in reading order`;
+  });
+
+  const detailHint = options?.preferText
+    ? "These crops preserve small text and dense details."
+    : "These crops provide localized detail views.";
+
+  return [
+    `Image set note: image 1 is the full overview of the ${sourceKind}.`,
+    `Images 2-${tileCount + 1} are ordered detail crops generated from the same image.`,
+    "Read them as a sequence of supporting close-ups after understanding the overview.",
+    detailHint,
+    `Per-image role: ${labels.join("; ")}.`,
+  ].join(" ");
 }
