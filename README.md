@@ -164,27 +164,28 @@ image_understand({
 
 ### 通用配置
 
-| 变量名 | 默认值 | 说明 |
-| --- | --- | --- |
-| `MODEL_PROVIDER` | `zhipu` | 模型提供商：`zhipu`、`siliconflow`、`qwen`、`volcengine`、`hunyuan` |
-| `MODEL_NAME` | 自动选择 | 模型名称 |
-| `MAX_TOKENS` | `16384` | 最大生成 token 数 |
-| `TEMPERATURE` | `0.7` | 温度参数 |
-| `TOP_P` | `0.7` | Top-p 参数 |
-| `ENABLE_THINKING` | `true` | 启用思考模式（若模型支持） |
-| `MULTI_CROP` | `true` | 启用大图多裁剪分析 |
-| `MULTI_CROP_MAX_TILES` | `5` | 最大分片数（含原图） |
-| `BASE_VISION_PROMPT` | 内置默认值 | 自定义基础视觉提示词 |
+| 变量名               | 默认值     | 说明                                                                |
+| -------------------- | ---------- | ------------------------------------------------------------------- |
+| `MODEL_PROVIDER`     | `zhipu`    | 模型提供商：`zhipu`、`siliconflow`、`qwen`、`volcengine`、`hunyuan` |
+| `MODEL_NAME`         | 自动选择   | 模型名称                                                            |
+| `BASE_VISION_PROMPT` | 内置默认值 | 自定义基础视觉提示词                                                |
+| `MAX_TOKENS`         | `8192`     | 最大生成 token 数（部分模型有硬上限，详见下方说明）                 |
+
+> [!IMPORTANT]
+> **关于 Token 限制的特别说明：**
+>
+> 1. **SiliconFlow (DeepSeek-OCR)**: 该模型的总上下文长度（输入+输出）仅为 **8192**。为了确保图片能正常输入，Luma 已在客户端内部将 `MAX_TOKENS` 硬性限制在 **4096** 以内。即使你在环境变量中设置了更高的值，也会被截断。
+> 2. **通用建议**: 视觉理解任务通常不需要极长的输出。对于大多数模型，建议将 `MAX_TOKENS` 保持在 `4096` 或 `8192`。设置过高（如 `16384`）在处理大图时，可能因总长度超过模型上限而导致 `400` 错误。
 
 ### 提供商密钥
 
-| 提供商 | 必填环境变量 | 默认模型 |
-| --- | --- | --- |
-| Zhipu | `ZHIPU_API_KEY` | `glm-4.6v` |
-| SiliconFlow | `SILICONFLOW_API_KEY` | `deepseek-ai/DeepSeek-OCR` |
-| Qwen | `DASHSCOPE_API_KEY` | `qwen3-vl-flash` |
-| Volcengine | `VOLCENGINE_API_KEY` | `doubao-seed-1-6-flash-250828` |
-| Hunyuan | `HUNYUAN_API_KEY` | `hunyuan-t1-vision-20250916` |
+| 提供商      | 必填环境变量          | 默认模型                       |
+| ----------- | --------------------- | ------------------------------ |
+| Zhipu       | `ZHIPU_API_KEY`       | `glm-4.6v`                     |
+| SiliconFlow | `SILICONFLOW_API_KEY` | `deepseek-ai/DeepSeek-OCR`     |
+| Qwen        | `DASHSCOPE_API_KEY`   | `qwen3-vl-flash`               |
+| Volcengine  | `VOLCENGINE_API_KEY`  | `doubao-seed-1-6-flash-250828` |
+| Hunyuan     | `HUNYUAN_API_KEY`     | `hunyuan-t1-vision-20250916`   |
 
 ## 本地测试
 

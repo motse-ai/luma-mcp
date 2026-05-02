@@ -168,13 +168,18 @@ image_understand({
 | --- | --- | --- |
 | `MODEL_PROVIDER` | `zhipu` | Provider: `zhipu`, `siliconflow`, `qwen`, `volcengine`, `hunyuan` |
 | `MODEL_NAME` | auto-selected | Model name override |
-| `MAX_TOKENS` | `16384` | Max generated tokens |
+| `MAX_TOKENS` | `8192` | Max generated tokens (some models have hard caps, see below) |
 | `TEMPERATURE` | `0.7` | Temperature |
 | `TOP_P` | `0.7` | Top-p |
 | `ENABLE_THINKING` | `true` | Enable thinking mode where supported |
 | `MULTI_CROP` | `true` | Enable multi-crop analysis for large images |
 | `MULTI_CROP_MAX_TILES` | `5` | Max number of tiles including the original image |
 | `BASE_VISION_PROMPT` | built-in default | Override the base vision prompt |
+
+> [!IMPORTANT]
+> **Special Note on Token Limits:**
+> 1. **SiliconFlow (DeepSeek-OCR)**: This model has a total context length (input + output) of only **8192**. To ensure images can be processed, Luma enforces a hard limit of **4096** for `MAX_TOKENS` internally for this provider. Any higher value in environment variables will be truncated.
+> 2. **General Recommendation**: Vision understanding tasks rarely require extremely long outputs. It is recommended to keep `MAX_TOKENS` at `4096` or `8192`. Setting it to `16384` may lead to `400` errors when processing large images if the total length exceeds the model's capacity.
 
 ### Provider Keys
 

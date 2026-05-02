@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 硅基流动 DeepSeek-OCR API 客户端
  * OpenAI 兼容接口
  */
@@ -85,14 +85,13 @@ export class SiliconFlowClient implements VisionClient {
         },
       ],
       temperature: this.temperature,
-      max_tokens: this.maxTokens,
+      max_tokens: Math.min(this.maxTokens, 4096),
       stream: false,
     };
 
     logger.info("Calling SiliconFlow DeepSeek-OCR API", {
       model: this.model,
       imageCount: Array.isArray(imageDataUrl) ? imageDataUrl.length : 1,
-      thinking: enableThinking !== false,
     });
 
     try {
